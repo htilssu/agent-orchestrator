@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -56,7 +57,7 @@ func TestCodexAccountCatalogCommitsStrictPrivateOpaqueSlot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := info.Mode().Perm(); got != want {
+		if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != want {
 			t.Errorf("%s mode = %o, want %o", path, got, want)
 		}
 	}

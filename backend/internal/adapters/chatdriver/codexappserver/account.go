@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -77,7 +78,7 @@ func (f *AccountFactory) Open(ctx context.Context, account ports.CodexAccountCon
 	}
 	if account.Managed {
 		info, err := os.Lstat(account.Home)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o700) {
 			return nil, errors.New("managed Codex account home is unavailable")
 		}
 	}
