@@ -70,14 +70,8 @@ func validateCodexDirectoryAncestors(path string) error {
 		if attrErr != nil || attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || attributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
 			return errors.New("codex directory has an unsafe ancestor")
 		}
-		handle, info, _, ownerTrusted, aclSafe, openErr := openCodexWindowsPath(current, true, false)
-		if openErr != nil {
-			return errors.New("codex directory ancestor could not be verified")
-		}
-		_ = windows.CloseHandle(handle)
-		if !codexWindowsPathMetadataIsSafe(codexWindowsMetadata(info, ownerTrusted, aclSafe), true, false) {
-			return errors.New("codex directory ancestor ACL is unsafe")
-		}
+		// Ancestor ACLs vary across Windows installations. Enforce credential
+		// permissions at the vault itself; retain directory/reparse checks here.
 		if parent := filepath.Dir(current); parent == current {
 			return nil
 		}
