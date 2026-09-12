@@ -85,7 +85,10 @@ func codexWindowsAncestorACLIsSafe(ownerTrusted bool, aces []codexWindowsACE) bo
 		return false
 	}
 	for _, ace := range aces {
-		if ace.Allowed && !ace.PrincipalTrusted && ace.Mask&codexWindowsMutationMask != 0 {
+		// Creating siblings cannot replace an existing protected directory.
+		// Windows volume roots commonly grant these two directory rights.
+		const ancestorMutationMask = codexWindowsMutationMask &^ (codexWindowsWriteData | codexWindowsAppendData)
+		if ace.Allowed && !ace.PrincipalTrusted && ace.Mask&ancestorMutationMask != 0 {
 			return false
 		}
 	}

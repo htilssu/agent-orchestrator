@@ -158,6 +158,15 @@ func codexWindowsHandleSecurity(handle windows.Handle, requirePrivate bool) (boo
 	}
 	ownerCurrent := owner.Equals(user.User.Sid)
 	ownerTrusted := ownerCurrent || owner.Equals(system) || owner.Equals(administrators)
+	// Windows system ancestors can be owned by the Windows Modules Installer.
+	// Keep this exception out of the private credential-store policy.
+	trustedInstaller, err := windows.StringToSid("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464")
+	if err != nil {
+		return false, false, false, err
+	}
+	if !requirePrivate && owner.Equals(trustedInstaller) {
+		ownerTrusted = true
+	}
 	dacl, _, err := sd.DACL()
 	if err != nil || dacl == nil {
 		return ownerCurrent, ownerTrusted, false, nil
@@ -178,6 +187,9 @@ func codexWindowsHandleSecurity(handle windows.Handle, requirePrivate bool) (boo
 		if allowed {
 			sid := (*windows.SID)(unsafe.Pointer(&raw.SidStart))
 			ace.PrincipalTrusted = sid.Equals(user.User.Sid) || sid.Equals(system) || sid.Equals(administrators)
+			if !requirePrivate && sid.Equals(trustedInstaller) {
+				ace.PrincipalTrusted = true
+			}
 		} else if prefix.header.AceType == 5 || prefix.header.AceType == 9 || prefix.header.AceType == 11 {
 			ace.Allowed = true
 		}

@@ -29,6 +29,20 @@ func TestWindowsVaultACLPolicyRejectsUntrustedCredentialAccess(t *testing.T) {
 }
 
 func TestWindowsAncestorACLPolicyAllowsReadButRejectsMutation(t *testing.T) {
+	for _, mask := range []uint32{codexWindowsWriteData, codexWindowsAppendData} {
+		aces := []codexWindowsACE{{Allowed: true, Mask: mask}}
+		if !codexWindowsAncestorACLIsSafe(true, aces) {
+			t.Fatal("ancestor sibling creation rejected")
+		}
+		if codexWindowsVaultACLIsSafe(true, aces) {
+			t.Fatal("private vault sibling creation accepted")
+		}
+	}
+	for _, mask := range []uint32{codexWindowsDelete, codexWindowsWriteDAC, codexWindowsWriteOwner, codexWindowsGenericWrite, codexWindowsGenericAll} {
+		if codexWindowsAncestorACLIsSafe(true, []codexWindowsACE{{Allowed: true, Mask: mask}}) {
+			t.Fatalf("ancestor mutation accepted: %#x", mask)
+		}
+	}
 	if !codexWindowsAncestorACLIsSafe(true, []codexWindowsACE{{Allowed: true, PrincipalTrusted: false, Mask: codexWindowsGenericRead}}) {
 		t.Fatal("read-only ancestor ACL rejected")
 	}
