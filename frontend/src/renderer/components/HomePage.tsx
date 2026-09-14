@@ -18,7 +18,7 @@ import { GitHubOnboardingNotice } from "./GitHubOnboardingNotice";
 import { TopbarButton } from "./TopbarButton";
 import { Badge } from "./ui/badge";
 
-const GITHUB_REPOSITORY_URL = "https://github.com/Untrivial-ai/agent-orchestrator";
+const GITHUB_REPOSITORY_URL = "https://github.com/htilssu/agent-orchestrator";
 const RECENT_PROJECT_LIMIT = 3;
 const HOME_BUTTON_CLASS =
 	"flex w-full items-center gap-3 rounded-welcome-panel bg-[var(--color-bg-import-card)] px-4 py-3 text-left hover:bg-interactive-hover hover:text-foreground active:bg-interactive-hover active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60";
