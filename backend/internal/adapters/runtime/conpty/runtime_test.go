@@ -1165,5 +1165,24 @@ func TestClientKill_Idempotent(t *testing.T) {
 	}
 }
 
+func TestCreate_SessionIDWithDot(t *testing.T) {
+	isolateRegistry(t)
+	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+		return "127.0.0.1:1", livePID(), nil
+	}})
+
+	handle, err := rt.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     "tgl.calendarmodule-2",
+		WorkspacePath: t.TempDir(),
+		Argv:          []string{"sh"},
+	})
+	if err != nil {
+		t.Fatalf("Create with dot in session ID failed: %v", err)
+	}
+	if handle.ID != "tgl.calendarmodule-2" {
+		t.Fatalf("handle.ID = %q, want %q", handle.ID, "tgl.calendarmodule-2")
+	}
+}
+
 // Ensure the packages compile (import check).
 var _ = io.Discard
