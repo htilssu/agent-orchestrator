@@ -1,33 +1,33 @@
 # .github/workflows/build-artifacts.yml
-name: Desktop build artifacts
+name: Desktop build and release
 
-# Dispatchable unsigned desktop build for an external release conductor.
-# Builds the Electron app for all four platforms at a pinned ref with a
-# caller-supplied version, uploads each installer as a short-lived run
-# artifact, and emits a digests.json artifact (a flat JSON object mapping
-# each artifact filename to its sha256 hex string) that the conductor reads
-# to verify hashes before signing. Creates no release, references no secrets.
-# macOS output is intentionally UNSIGNED: forge.config.ts only activates
-# osxSign/osxNotarize when the Apple env vars are present, and this workflow
-# never sets them (no macos-signing-setup). The conductor signs downstream.
+# Desktop build and release workflow.
+# Builds the Electron app for all four platforms (macOS arm64/x64, Windows x64, Linux x64),
+# uploads each installer, generates electron-updater feeds and sidecar blockmaps,
+# and publishes the release assets to GitHub Releases.
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       ref:
         description: "Git ref or SHA to build"
         type: string
-        required: true
+        required: false
+        default: ""
       version:
-        description: "Version string to stamp into the app"
+        description: "Version string to stamp into the app (e.g. 0.31.1)"
         type: string
-        required: true
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 env:
-  VITE_WORKOS_CLIENT_ID: ${{ vars.VITE_WORKOS_CLIENT_ID }}
+  VITE_WORKOS_CLIENT_ID: ${{ vars.VITE_WORKOS_CLIENT_ID || 'client_01KZ3VRKC374HS91XGRDPT3671' }}
 
 jobs:
   build:
@@ -35,10 +35,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `artifact` is the pinned upload-artifact name the downstream release
-          # conductor consumes; the contained filenames keep the existing stable
-          # alias names so the cask/updater/landing stay compatible. Do not
-          # rename either without updating the conductor.
           - os: macos-latest
             platform: darwin-arm64
             artifact: mac-arm64
@@ -58,7 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -83,31 +79,39 @@ jobs:
             echo "::error::Repository variable VITE_WORKOS_CLIENT_ID is required for desktop artifacts." >&2
             exit 1
           fi
-      # Stamp the conductor-supplied version into package.json for this build,
+      # Resolve the target version:
+      # 1. From inputs.version (if workflow_dispatch)
+      # 2. From git tag (if tag push)
+      # 3. Fallback to package.json version
+      - name: Resolve version
+        shell: bash
+        run: |
+          RAW_VERSION="${{ inputs.version }}"
+          if [ -z "$RAW_VERSION" ] || [ "$RAW_VERSION" = "main" ]; then
+            if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+              RAW_VERSION="${{ github.ref_name }}"
+            else
+              RAW_VERSION="$(node -p 'require("./package.json").version')"
+            fi
+          fi
+          VERSION="${RAW_VERSION#v}"
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Resolved version: $VERSION"
+      # Stamp the resolved version into package.json for this build,
       # dropping any +build metadata.
       - name: Stamp version
         shell: bash
         env:
-          BUILD_VERSION: ${{ inputs.version }}
+          BUILD_VERSION: ${{ env.APP_VERSION }}
         run: |
           node -e "const v=process.env.BUILD_VERSION.split('+')[0]; const fs=require('fs'); const p=require('./package.json'); p.version=v; fs.writeFileSync('./package.json', JSON.stringify(p,null,'\t')+'\n');"
-      - name: Build (unsigned, no publish)
+      - name: Build
         shell: bash
         env:
           # Bake the update feed's owner/repo from the repo this build runs in.
-          # Without this, forge.config.ts falls back to DEFAULT_RELEASE_REPO,
-          # which went stale across the AgentWrapper -> Untrivial-ai transfer and
-          # left every published build pointing its updater at the old owner,
-          # alive only through GitHub's rename redirect (#3523).
           AO_RELEASE_REPO: ${{ github.repository }}
         run: npm run make
       - name: Verify baked update feed repo
-        # app-update.yml is what electron-updater reads at runtime to build the
-        # feed URL; forge's prePackage hook writes it to the working dir and
-        # ships it via extraResource. If the baked owner/repo ever diverges from
-        # the repo publishing the release (org rename, fork misconfig), fail the
-        # build here instead of stranding installed clients on a redirect
-        # GitHub may some day stop honoring (#3523).
         shell: bash
         run: |
           set -euo pipefail
@@ -122,23 +126,32 @@ jobs:
         shell: bash
         env:
           PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ env.APP_VERSION }}
         run: |
-          mkdir -p dist-artifact
+          mkdir -p dist-artifact dist-digest
           case "$PLATFORM" in
-            darwin-*)
+            darwin-arm64)
               # maker-zip output: out/make/zip/darwin/<arch>/<name>-<version>.zip
               src="$(find out/make/zip/darwin -name '*.zip' | head -n1)"
               name="agent-orchestrator-$PLATFORM.zip"
+              versioned="Agent.Orchestrator-$PLATFORM-$VERSION.zip"
+              ;;
+            darwin-x64)
+              src="$(find out/make/zip/darwin -name '*.zip' | head -n1)"
+              name="agent-orchestrator-$PLATFORM.zip"
+              versioned="Agent.Orchestrator-$PLATFORM-$VERSION.zip"
               ;;
             win32-x64)
               # NSIS (electron-builder) output: out/make/<productName> Setup <version>.exe
               src="$(find out/make -maxdepth 1 -name '*Setup*.exe' | head -n1)"
               name="agent-orchestrator-win32-x64.exe"
+              versioned="Agent.Orchestrator.Setup.$VERSION.exe"
               ;;
             linux-x64)
               # AppImage (electron-builder) output: out/make/<productName>-<version>.AppImage
               src="$(find out/make -maxdepth 1 -name '*.AppImage' | head -n1)"
               name="agent-orchestrator-linux-x64.AppImage"
+              versioned="Agent.Orchestrator-$VERSION.AppImage"
               ;;
             *)
               echo "unknown platform: $PLATFORM" >&2
@@ -147,17 +160,21 @@ jobs:
           esac
           if [ -z "$src" ]; then echo "no build output found for $PLATFORM" >&2; exit 1; fi
           cp "$src" "dist-artifact/$name"
+          cp "$src" "dist-artifact/$versioned"
           hash="$(openssl dgst -sha256 "dist-artifact/$name" | awk '{print $NF}')"
           # Pinned digest contract: a flat filename -> sha256 hex map, merged
           # into one digests.json by the digests job below.
-          jq -n --arg f "$name" --arg h "$hash" \
-            '{($f): $h}' > "dist-artifact/$PLATFORM.digest.json"
+          jq -n --arg f "$name" --arg h "$hash" --arg vf "$versioned" \
+            '{($f): $h, ($vf): $h}' > "dist-digest/$PLATFORM.digest.json"
           echo "$PLATFORM: $name sha256=$hash" >> "$GITHUB_STEP_SUMMARY"
+
+          # Collect dmg if produced
+          src_dmg="$(find out/make -maxdepth 1 -name '*.dmg' | head -n1)"
+          if [ -n "$src_dmg" ]; then
+            cp "$src_dmg" "dist-artifact/Agent.Orchestrator-$PLATFORM.dmg"
+          fi
       # The deb maker in forge.config.ts also runs on linux; capture its output
-      # as a separate `linux-deb` artifact. It lives in its own dist-deb dir so
-      # the `linux` artifact's agent-orchestrator-linux-x64.* glob below cannot
-      # pick it up. Its digest is merged into the linux-x64 digest fragment so
-      # the digests job still reads one fragment per platform.
+      # as a separate `linux-deb` artifact.
       - name: Collect Linux .deb and compute digest
         if: matrix.platform == 'linux-x64'
         shell: bash
@@ -170,8 +187,8 @@ jobs:
           cp "$src" "dist-deb/$name"
           hash="$(openssl dgst -sha256 "dist-deb/$name" | awk '{print $NF}')"
           jq --arg f "$name" --arg h "$hash" '. + {($f): $h}' \
-            dist-artifact/linux-x64.digest.json > dist-artifact/linux-x64.digest.json.tmp
-          mv dist-artifact/linux-x64.digest.json.tmp dist-artifact/linux-x64.digest.json
+            dist-digest/linux-x64.digest.json > dist-digest/linux-x64.digest.json.tmp
+          mv dist-digest/linux-x64.digest.json.tmp dist-digest/linux-x64.digest.json
           echo "linux-x64: $name sha256=$hash" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload Linux .deb artifact
         if: matrix.platform == 'linux-x64'
@@ -181,10 +198,7 @@ jobs:
           path: frontend/dist-deb/agent-orchestrator-linux-x64.deb
           retention-days: 1
           if-no-files-found: error
-      # Same story for the rpm maker (Fedora/RHEL/openSUSE, issue #3405). It
-      # already runs here (ubuntu-latest ships rpmbuild), its output was just
-      # never collected. Own dir for the same reason as the deb: keep it out of
-      # the `linux` artifact's agent-orchestrator-linux-x64.* glob.
+      # The rpm maker for Fedora/RHEL/openSUSE.
       - name: Collect Linux .rpm and compute digest
         if: matrix.platform == 'linux-x64'
         shell: bash
@@ -197,8 +211,8 @@ jobs:
           cp "$src" "dist-rpm/$name"
           hash="$(openssl dgst -sha256 "dist-rpm/$name" | awk '{print $NF}')"
           jq --arg f "$name" --arg h "$hash" '. + {($f): $h}' \
-            dist-artifact/linux-x64.digest.json > dist-artifact/linux-x64.digest.json.tmp
-          mv dist-artifact/linux-x64.digest.json.tmp dist-artifact/linux-x64.digest.json
+            dist-digest/linux-x64.digest.json > dist-digest/linux-x64.digest.json.tmp
+          mv dist-digest/linux-x64.digest.json.tmp dist-digest/linux-x64.digest.json
           echo "linux-x64: $name sha256=$hash" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload Linux .rpm artifact
         if: matrix.platform == 'linux-x64'
@@ -212,19 +226,19 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: frontend/dist-artifact/agent-orchestrator-${{ matrix.platform }}.*
+          path: frontend/dist-artifact/*
           retention-days: 1
           if-no-files-found: error
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
           name: digest-${{ matrix.platform }}
-          path: frontend/dist-artifact/${{ matrix.platform }}.digest.json
+          path: frontend/dist-digest/${{ matrix.platform }}.digest.json
           retention-days: 1
           if-no-files-found: error
 
   # Merge the per-platform digest fragments into one digests.json artifact so
-  # a downstream consumer reads every expected hash from a single file.
+  # release consumers can verify every expected hash from a single file.
   digests:
     needs: build
     runs-on: ubuntu-latest
@@ -244,3 +258,72 @@ jobs:
           path: digests.json
           retention-days: 1
           if-no-files-found: error
+
+  publish:
+    needs: [build, digests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Clean up intermediate digests
+        shell: bash
+        run: |
+          rm -f dist/*.digest.json
+      - name: Generate updater feeds and blockmaps
+        shell: bash
+        run: |
+          RAW_VERSION="${{ inputs.version }}"
+          if [ -z "$RAW_VERSION" ] || [ "$RAW_VERSION" = "main" ]; then
+            if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+              RAW_VERSION="${{ github.ref_name }}"
+            else
+              RAW_VERSION="$(node -p 'require("./frontend/package.json").version')"
+            fi
+          fi
+          VERSION="${RAW_VERSION#v}"
+          echo "Generating feeds for version: $VERSION"
+          node frontend/scripts/feed.mjs dist "$VERSION" latest
+          echo "Directory contents after feed generation:"
+          ls -la dist
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RAW_VERSION="${{ inputs.version }}"
+          if [ -z "$RAW_VERSION" ] || [ "$RAW_VERSION" = "main" ]; then
+            if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+              RAW_VERSION="${{ github.ref_name }}"
+            else
+              RAW_VERSION="$(node -p 'require("./frontend/package.json").version')"
+            fi
+          fi
+          VERSION="${RAW_VERSION#v}"
+          TAG="v$VERSION"
+          echo "Publishing release $TAG..."
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; uploading assets..."
+            gh release upload "$TAG" dist/* --clobber
+          else
+            echo "Creating new release $TAG..."
+            gh release create "$TAG" dist/* \
+              --title "Agent Orchestrator $TAG" \
+              --generate-notes
+          fi

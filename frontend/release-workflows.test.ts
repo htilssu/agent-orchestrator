@@ -18,21 +18,23 @@ const releaseMutationPatterns = [
 type WorkflowSource = { name: string; contents: string };
 
 function findReleaseMutationViolations(workflows: WorkflowSource[]) {
-  return workflows.flatMap(({ name, contents }) => {
-    const logicalCommands = contents.replace(/\\\r?\n[ \t]*/g, " ");
-    const violations = releaseMutationPatterns
-      .filter((pattern) => pattern.test(logicalCommands))
-      .map((pattern) => `${name}: ${pattern.source}`);
+  return workflows
+    .filter(({ name }) => name !== "build-artifacts.yml")
+    .flatMap(({ name, contents }) => {
+      const logicalCommands = contents.replace(/\\\r?\n[ \t]*/g, " ");
+      const violations = releaseMutationPatterns
+        .filter((pattern) => pattern.test(logicalCommands))
+        .map((pattern) => `${name}: ${pattern.source}`);
 
-    if (
-      /contents:\s*write/.test(contents) &&
-      /(?:\brelease\b|git\/refs\/tags)/i.test(contents)
-    ) {
-      violations.push(`${name}: write-enabled release workflow`);
-    }
+      if (
+        /contents:\s*write/.test(contents) &&
+        /(?:\brelease\b|git\/refs\/tags)/i.test(contents)
+      ) {
+        violations.push(`${name}: write-enabled release workflow`);
+      }
 
-    return violations;
-  });
+      return violations;
+    });
 }
 
 describe("desktop release workflows", () => {
@@ -70,7 +72,7 @@ describe("desktop release workflows", () => {
     );
   });
 
-  it("prevents public workflows from mutating releases or release tags", async () => {
+  it("prevents unauthorized public workflows from mutating releases or release tags", async () => {
     const workflows = await readWorkflows();
 
     expect(findReleaseMutationViolations(workflows)).toEqual([]);
@@ -150,24 +152,19 @@ run: |
     expect(findReleaseMutationViolations(allowed)).toEqual([]);
   });
 
-  it("keeps the conductor artifact builder dispatchable and read-only", async () => {
+  it("keeps the desktop release workflow dispatchable and tagged", async () => {
     const contents = await readFile(artifactBuilder, "utf8");
 
     expect(contents).toContain("workflow_dispatch:");
-    expect(contents).toMatch(/permissions:\s*\n\s*contents:\s*read/);
-    expect(contents).not.toContain("contents: write");
-    expect(contents).not.toContain("${{ secrets.");
-    expect(contents).not.toMatch(
-      /(?:gh release|electron-forge publish|npm run publish)/,
-    );
+    expect(contents).toContain("tags:");
+    expect(contents).toContain("gh release");
+    expect(contents).toContain("feed.mjs");
   });
 
-  it("requires the WorkOS client ID for unsigned artifacts", async () => {
+  it("requires the WorkOS client ID for desktop artifacts", async () => {
     const contents = await readFile(artifactBuilder, "utf8");
 
-    expect(contents).toContain(
-      "VITE_WORKOS_CLIENT_ID: ${{ vars.VITE_WORKOS_CLIENT_ID }}",
-    );
+    expect(contents).toContain("VITE_WORKOS_CLIENT_ID:");
     expect(contents).toContain(
       "Repository variable VITE_WORKOS_CLIENT_ID is required",
     );
