@@ -10,6 +10,7 @@
 import { readdirSync, writeFileSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { writeBlockmap } from "./blockmap.mjs";
 
 // selectInstallers picks the versioned, auto-updatable installers from a release
@@ -104,7 +105,7 @@ export async function generateFeeds(dir, rawVersion, channel, releaseDate, impor
 }
 
 // CLI: node scripts/feed.mjs <dir> <version> <channel> [--important]
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	const [, , dir, version, channel] = process.argv;
 	if (!dir || !version || !channel) {
 		process.stderr.write("usage: node feed.mjs <dir> <version> <channel>\n");
