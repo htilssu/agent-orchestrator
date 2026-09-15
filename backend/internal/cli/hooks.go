@@ -27,7 +27,7 @@ import (
 // sessionIDPattern bounds the AO_SESSION_ID we will place in a request path to
 // the id alphabet the daemon issues. Validating the externally-set env value
 // before it reaches the loopback URL keeps it from steering the request.
-var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.-]*$`)
 
 const (
 	// hooksLogName is the file under AO_DATA_DIR where hook delivery failures
@@ -99,17 +99,24 @@ const (
 // strings and the signal degrades to today's state-only form.
 func activityMeta(payload []byte) (toolName, toolUseID string) {
 	var p struct {
-		ToolName  string `json:"tool_name"`
-		ToolUseID string `json:"tool_use_id"`
+		ToolName       string `json:"tool_name"`
+		ToolNameCamel  string `json:"toolName"`
+		ToolCall       struct {
+			Name string `json:"name"`
+		} `json:"toolCall"`
+		ToolUseID      string `json:"tool_use_id"`
+		ToolUseIDCamel string `json:"toolUseId"`
 	}
 	_ = json.Unmarshal(payload, &p)
-	if len(p.ToolName) > maxActivityMetaLen {
-		p.ToolName = ""
+	toolName = firstHookValue(p.ToolName, p.ToolNameCamel, p.ToolCall.Name)
+	toolUseID = firstHookValue(p.ToolUseID, p.ToolUseIDCamel)
+	if len(toolName) > maxActivityMetaLen {
+		toolName = ""
 	}
-	if len(p.ToolUseID) > maxActivityMetaLen {
-		p.ToolUseID = ""
+	if len(toolUseID) > maxActivityMetaLen {
+		toolUseID = ""
 	}
-	return p.ToolName, p.ToolUseID
+	return toolName, toolUseID
 }
 
 // hookAgentSessionID extracts the native resume handle shared by Agy, Copilot,
@@ -443,7 +450,7 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	}
 	conversation := hookConversationSnapshot{}
 	switch domain.AgentHarness(agent) {
-	case domain.HarnessClaudeCode, domain.HarnessCodex, domain.HarnessContinue:
+	case domain.HarnessClaudeCode, domain.HarnessCodex, domain.HarnessContinue, domain.HarnessAgy:
 		conversation = hookConversationFacts(domain.AgentHarness(agent), event, payload)
 	}
 	path := "sessions/" + url.PathEscape(sessionID) + "/activity"

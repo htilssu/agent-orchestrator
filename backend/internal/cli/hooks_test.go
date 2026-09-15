@@ -1330,6 +1330,84 @@ func TestHooks_RejectsMalformedSessionID(t *testing.T) {
 	}
 }
 
+func TestHooks_AllowsSessionIDWithDots(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "tgl.calendarmodule-4")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(`{"reason":"logout"}`),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "claude-code", "session-end")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capture.hits != 1 {
+		t.Fatalf("expected daemon call for session id with dots, got %d", capture.hits)
+	}
+	if capture.path != "/api/v1/sessions/tgl.calendarmodule-4/activity" {
+		t.Fatalf("request path = %q", capture.path)
+	}
+}
+
+func TestHooks_AgyReportsActivityAndConversationFacts(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "tgl.calendarmodule-4")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	payload := `{
+		"conversationId": "1b2c7cc9-dbf0-4fac-bd78-53bbaf0cfe68",
+		"transcriptPath": "C:\\Users\\hieut\\.gemini\\antigravity-cli\\brain\\1b2c7cc9\\transcript.jsonl",
+		"toolCall": {
+			"name": "run_command"
+		}
+	}`
+	out, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(payload),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "agy", "pre-invocation")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.TrimSpace(out) != "{}" {
+		t.Fatalf("agy hook output = %q, want {}", out)
+	}
+	if capture.hits != 1 {
+		t.Fatalf("expected 1 daemon call, got %d", capture.hits)
+	}
+	if capture.path != "/api/v1/sessions/tgl.calendarmodule-4/activity" {
+		t.Fatalf("request path = %q", capture.path)
+	}
+
+	var req struct {
+		State          string `json:"state"`
+		Event          string `json:"event"`
+		ToolName       string `json:"toolName"`
+		AgentSessionID string `json:"agentSessionId"`
+		TranscriptPath string `json:"transcriptPath"`
+	}
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("unmarshal capture body: %v\nbody=%s", err, capture.body)
+	}
+	if req.State != "active" {
+		t.Errorf("state = %q, want active", req.State)
+	}
+	if req.Event != "pre-invocation" {
+		t.Errorf("event = %q, want pre-invocation", req.Event)
+	}
+	if req.ToolName != "run_command" {
+		t.Errorf("toolName = %q, want run_command", req.ToolName)
+	}
+	if req.AgentSessionID != "1b2c7cc9-dbf0-4fac-bd78-53bbaf0cfe68" {
+		t.Errorf("agentSessionId = %q, want 1b2c7cc9-dbf0-4fac-bd78-53bbaf0cfe68", req.AgentSessionID)
+	}
+	if req.TranscriptPath != `C:\Users\hieut\.gemini\antigravity-cli\brain\1b2c7cc9\transcript.jsonl` {
+		t.Errorf("transcriptPath = %q", req.TranscriptPath)
+	}
+}
+
 func TestHooks_NoSessionIDIsNoOp(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
