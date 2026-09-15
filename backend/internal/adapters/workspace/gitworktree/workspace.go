@@ -1288,6 +1288,11 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 			baseRef = refs.baseRef
 		}
 		if _, err := w.run(ctx, w.binary, worktreeAddBranchArgs(repo, path, branch, force)...); err != nil {
+			if isFilenameTooLongError(err) && w.enableLongPaths(ctx, repo) == nil {
+				if _, retryErr := w.run(ctx, w.binary, worktreeAddBranchArgs(repo, path, branch, force)...); retryErr == nil {
+					return baseRef, nil
+				}
+			}
 			return "", fmt.Errorf("gitworktree: worktree add existing branch %q: %w", branch, err)
 		}
 		return baseRef, nil
@@ -1369,6 +1374,16 @@ func (w *Workspace) addNewBranchWorktree(ctx context.Context, repo, branch, path
 	_, err := w.run(ctx, w.binary, worktreeAddNewBranchArgs(repo, branch, path, baseRef, force)...)
 	if err == nil {
 		return nil
+	}
+	if isFilenameTooLongError(err) && w.enableLongPaths(ctx, repo) == nil {
+		created, _ := w.refExists(ctx, repo, "refs/heads/"+branch)
+		retryArgs := worktreeAddNewBranchArgs(repo, branch, path, baseRef, force)
+		if created {
+			retryArgs = worktreeAddBranchArgs(repo, path, branch, force)
+		}
+		if _, retryErr := w.run(ctx, w.binary, retryArgs...); retryErr == nil {
+			return nil
+		}
 	}
 	// --force was already in play, so the stale registration is not what failed.
 	if force || !isMissingRegisteredWorktreeError(err) {
@@ -1517,6 +1532,19 @@ func (w *Workspace) pruneWorktrees(ctx context.Context, repo string) error {
 
 func isMissingRegisteredWorktreeError(err error) bool {
 	return strings.Contains(err.Error(), "is a missing but already registered worktree")
+}
+
+func isFilenameTooLongError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "filename too long") || strings.Contains(msg, "file name too long")
+}
+
+func (w *Workspace) enableLongPaths(ctx context.Context, repo string) error {
+	_, err := w.run(ctx, w.binary, "-C", repo, "config", "core.longpaths", "true")
+	return err
 }
 
 func isLockedWorktreeRemoveError(err error) bool {

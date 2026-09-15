@@ -1120,3 +1120,69 @@ func TestGitWorktreeExitStatusOneHelper(t *testing.T) {
 	}
 	os.Exit(1)
 }
+
+func TestIsFilenameTooLongError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errors.New("other error"), false},
+		{errors.New("error: unable to create file some/deep/path: Filename too long"), true},
+		{errors.New("error: unable to create file some/deep/path: file name too long"), true},
+		{commandError{output: "Filename too long\nfatal: Could not reset index file to revision 'HEAD'."}, true},
+	}
+	for _, tc := range cases {
+		if got := isFilenameTooLongError(tc.err); got != tc.want {
+			t.Errorf("isFilenameTooLongError(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestWorktreeAddRecoversOnFilenameTooLong(t *testing.T) {
+	repoDir := t.TempDir()
+	managedDir := t.TempDir()
+
+	ws, err := New(Options{
+		ManagedRoot:  managedDir,
+		RepoResolver: StaticRepoResolver{domain.ProjectID("proj"): repoDir},
+	})
+	if err != nil {
+		t.Fatalf("New() err = %v", err)
+	}
+
+	longPathsConfigured := false
+	addAttempts := 0
+
+	ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "config core.longpaths true"):
+			longPathsConfigured = true
+			return nil, nil
+		case strings.Contains(joined, "worktree add"):
+			addAttempts++
+			if !longPathsConfigured {
+				return nil, commandError{args: args, output: "error: unable to create file deep/path: Filename too long", err: errors.New("exit status 1")}
+			}
+			return nil, nil
+		case strings.Contains(joined, "rev-parse --verify"):
+			return []byte("abc123\n"), nil
+		case strings.Contains(joined, "worktree list"):
+			return nil, nil
+		default:
+			return nil, nil
+		}
+	}
+
+	err = ws.addNewBranchWorktree(context.Background(), repoDir, "feature/long", filepath.Join(managedDir, "proj", "feature-long"), "origin/main", false)
+	if err != nil {
+		t.Fatalf("addNewBranchWorktree err = %v, want recovery", err)
+	}
+	if !longPathsConfigured {
+		t.Fatalf("expected core.longpaths to be configured on failure")
+	}
+	if addAttempts != 2 {
+		t.Fatalf("expected 2 worktree add attempts, got %d", addAttempts)
+	}
+}
